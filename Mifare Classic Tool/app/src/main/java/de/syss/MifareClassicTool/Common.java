@@ -26,6 +26,7 @@ import android.app.ActivityManager;
 import android.app.AlertDialog;
 import android.app.Application;
 import android.app.PendingIntent;
+import android.os.Bundle;
 import android.content.ComponentName;
 import android.content.Context;
 import android.content.Intent;
@@ -152,7 +153,7 @@ public class Common extends Application {
      * The last detected tag.
      * Set by {@link #treatAsNewTag(Intent, Context)}
      */
-    private static Tag mTag = null;
+    private static volatile Tag mTag = null;
 
     /**
      * The last detected UID.
@@ -671,36 +672,76 @@ public class Common extends Application {
      */
     public static void enableNfcForegroundDispatch(Activity targetActivity) {
         if (mNfcAdapter != null && mNfcAdapter.isEnabled()) {
-
-            Intent intent = new Intent(targetActivity,
-                    targetActivity.getClass()).addFlags(
-                            Intent.FLAG_ACTIVITY_SINGLE_TOP);
-            PendingIntent pendingIntent = PendingIntent.getActivity(
-                    targetActivity, 0, intent, PendingIntent.FLAG_MUTABLE);
+            // Android 17 fix: use reader mode instead of the foreground
+            // dispatch system. On Android 17 the PendingIntent sent by the
+            // NFC service is blocked by the background activity launch (BAL)
+            // hardening, so the activity never receives new tags. Reader mode
+            // delivers the tag directly via callback. It also skips the NDEF
+            // check (which triggers reconnects) and lowers the presence check
+            // frequency (fewer "tag lost" events with MIFARE Classic).
+            final Activity act = targetActivity;
+            sReaderEnabledAt = android.os.SystemClock.elapsedRealtime();
+            sResumeCounter++;
+            setAutoOpenAlias(act, false);
+            Bundle extras = new Bundle();
+            extras.putInt(NfcAdapter.EXTRA_READER_PRESENCE_CHECK_DELAY, 1000);
+            int flags = NfcAdapter.FLAG_READER_NFC_A
+                    | NfcAdapter.FLAG_READER_SKIP_NDEF_CHECK
+                    | NfcAdapter.FLAG_READER_NO_PLATFORM_SOUNDS;
             try {
-                mNfcAdapter.enableForegroundDispatch(
-                        targetActivity, pendingIntent, null, new String[][]{
-                                new String[]{NfcA.class.getName()}});
+                mNfcAdapter.enableReaderMode(act, tag -> {
+                    // Store the fresh tag at once (binder thread), so a reader
+                    // waiting in checkForTagAndCreateReader() can pick it up.
+                    mTag = tag;
+                    act.runOnUiThread(() -> {
+                    Intent i = new Intent(NfcAdapter.ACTION_TECH_DISCOVERED);
+                    i.putExtra(NfcAdapter.EXTRA_TAG, tag);
+                    i.putExtra(NfcAdapter.EXTRA_ID, tag.getId());
+                    try {
+                        java.lang.reflect.Method m = act.getClass().getMethod(
+                                "onNewIntent", Intent.class);
+                        m.invoke(act, i);
+                    } catch (NoSuchMethodException ex) {
+                        // Activity does not handle new tags itself; the fresh
+                        // tag is already stored in mTag.
+                    } catch (Exception ex) {
+                        Log.e(LOG_TAG, "Error: Could not deliver tag to " +
+                                act.getClass().getSimpleName(), ex);
+                    }
+                    });
+                }, flags, extras);
             } catch (IllegalStateException | SecurityException ex) {
-                Log.d(LOG_TAG, "Error: Could not enable the NFC foreground" +
-                        "dispatch system. The activity was not in foreground.");
+                Log.d(LOG_TAG, "Error: Could not enable the NFC reader " +
+                        "mode. The activity was not in foreground.");
             }
         }
     }
 
     /**
-     * Disable the NFC foreground dispatch system for the given Activity.
+     * Disable the NFC reader mode for the given Activity.
      * @param targetActivity An Activity that is in foreground and has
-     * NFC foreground dispatch system enabled.
+     * NFC reader mode enabled.
      * @see #enableNfcForegroundDispatch(Activity)
      */
     public static void disableNfcForegroundDispatch(Activity targetActivity) {
         if (mNfcAdapter != null && mNfcAdapter.isEnabled()) {
+            // Re-enable "open on tag" only if no MCT screen comes back soon
+            // (i.e. the app really left the foreground).
+            final android.content.Context appCtx =
+                    targetActivity.getApplicationContext();
+            final int counter = sResumeCounter;
+            new android.os.Handler(android.os.Looper.getMainLooper())
+                    .postDelayed(() -> {
+                        if (counter == sResumeCounter && getPreferences()
+                                .getBoolean("a17_autostart", true)) {
+                            setAutoOpenAlias(appCtx, true);
+                        }
+                    }, 2000);
             try {
-                mNfcAdapter.disableForegroundDispatch(targetActivity);
+                mNfcAdapter.disableReaderMode(targetActivity);
             } catch (IllegalStateException ex) {
-                Log.d(LOG_TAG, "Error: Could not disable the NFC foreground" +
-                        "dispatch system. The activity was not in foreground.");
+                Log.d(LOG_TAG, "Error: Could not disable the NFC reader " +
+                        "mode. The activity was not in foreground.");
             }
         }
     }
@@ -748,6 +789,57 @@ public class Common extends Application {
      * @see #mUID
      * @see #checkMifareClassicSupport(Tag, Context)
      */
+    private static String sLastToastUid = null;
+    private static long sLastToastTime = 0;
+    private static volatile long sReaderEnabledAt = 0;
+    private static int sResumeCounter = 0;
+
+    /**
+     * Enable/disable the NFC auto-open alias of this app. It is off while an
+     * MCT screen is in front (reader mode restarts would re-open the main
+     * menu) and on while the app is in background.
+     */
+    private static void setAutoOpenAlias(android.content.Context ctx,
+            boolean enabled) {
+        try {
+            android.content.pm.PackageManager pm = ctx.getPackageManager();
+            android.content.ComponentName cn = new android.content.ComponentName(
+                    ctx.getPackageName(),
+                    "de.syss.MifareClassicTool.MainMenuAlias");
+            int want = enabled
+                    ? android.content.pm.PackageManager.COMPONENT_ENABLED_STATE_DEFAULT
+                    : android.content.pm.PackageManager.COMPONENT_ENABLED_STATE_DISABLED;
+            if (pm.getComponentEnabledSetting(cn) != want) {
+                pm.setComponentEnabledSetting(cn, want,
+                        android.content.pm.PackageManager.DONT_KILL_APP);
+            }
+        } catch (RuntimeException ex) {
+            Log.d(LOG_TAG, "Could not change auto-open alias state.");
+        }
+    }
+
+    /**
+     * Run something once the activity is resumed (NFC reader active).
+     */
+    public static void runWhenResumed(androidx.appcompat.app.AppCompatActivity a,
+            Runnable r) {
+        final android.os.Handler h = new android.os.Handler(
+                android.os.Looper.getMainLooper());
+        androidx.lifecycle.Lifecycle lc = a.getLifecycle();
+        if (lc.getCurrentState().isAtLeast(androidx.lifecycle.Lifecycle.State.RESUMED)) {
+            h.post(r);
+            return;
+        }
+        lc.addObserver(new androidx.lifecycle.DefaultLifecycleObserver() {
+            @Override
+            public void onResume(androidx.lifecycle.LifecycleOwner owner) {
+                owner.getLifecycle().removeObserver(this);
+                // Give the NFC stack a moment to restart polling.
+                h.postDelayed(r, 150);
+            }
+        });
+    }
+
     public static int treatAsNewTag(Intent intent, Context context) {
         // Check if Intent has a NFC Tag.
         if (NfcAdapter.ACTION_TECH_DISCOVERED.equals(intent.getAction())) {
@@ -765,7 +857,31 @@ public class Common extends Application {
                 return -3;
             }
             setTag(tag);
-            logUid(bytes2Hex(tag.getId()));
+            // Reader mode restarts polling on every activity change, so the
+            // same tag is "found" again. Stay quiet for the same UID.
+            String newUid = bytes2Hex(tag.getId());
+            long now = android.os.SystemClock.elapsedRealtime();
+            // Only the automatic re-detection right after a screen change
+            // (reader mode restart) is silenced. A tag put back by hand
+            // is announced again.
+            boolean sameTag = newUid.equals(sLastToastUid)
+                    && now - sReaderEnabledAt < 1500;
+            sLastToastUid = newUid;
+            sLastToastTime = now;
+            if (sameTag) {
+                return checkMifareClassicSupport(tag, context);
+            }
+            // Platform sounds are off in reader mode: beep only for new tags.
+            try {
+                android.media.ToneGenerator tg = new android.media.ToneGenerator(
+                        android.media.AudioManager.STREAM_NOTIFICATION, 80);
+                tg.startTone(android.media.ToneGenerator.TONE_PROP_BEEP, 150);
+                new android.os.Handler(android.os.Looper.getMainLooper())
+                        .postDelayed(tg::release, 300);
+            } catch (RuntimeException ex) {
+                // No sound, no problem.
+            }
+            logUid(newUid);
 
             boolean isCopyUID = getPreferences().getBoolean(
                     AutoCopyUID.toString(), false);
@@ -1065,20 +1181,34 @@ public class Common extends Application {
      */
     public static MCReader checkForTagAndCreateReader(Context context) {
         MCReader reader;
-        boolean tagLost = false;
-        // Check for tag.
-        if (mTag != null && (reader = MCReader.get(mTag)) != null) {
+        // Android 17 / reader mode: switching activities restarts polling,
+        // so the stored Tag goes stale and a fresh one arrives a few ms later.
+        // Retry for up to 2 s with whatever tag is newest.
+        long deadline = android.os.SystemClock.elapsedRealtime() + 2000;
+        while (true) {
+            boolean tagLost = false;
+            Tag current = mTag;
+            if (current != null && (reader = MCReader.get(current)) != null) {
+                try {
+                    reader.connect();
+                } catch (Exception e) {
+                    tagLost = true;
+                }
+                if (!tagLost && !reader.isConnected()) {
+                    reader.close();
+                    tagLost = true;
+                }
+                if (!tagLost) {
+                    return reader;
+                }
+            }
+            if (android.os.SystemClock.elapsedRealtime() > deadline) {
+                break;
+            }
             try {
-                reader.connect();
-            } catch (Exception e) {
-                tagLost = true;
-            }
-            if (!tagLost && !reader.isConnected()) {
-                reader.close();
-                tagLost = true;
-            }
-            if (!tagLost) {
-                return reader;
+                Thread.sleep(100);
+            } catch (InterruptedException ie) {
+                break;
             }
         }
 

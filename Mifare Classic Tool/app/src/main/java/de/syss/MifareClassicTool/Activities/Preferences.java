@@ -106,8 +106,8 @@ public class Preferences extends BasicActivity {
         setContentView(R.layout.activity_preferences);
 
         mPackageManager = getApplicationContext().getPackageManager();
-        mComponentName = new ComponentName(getPackageName(), getPackageName() +
-                ".MainMenuAlias");
+        mComponentName = new ComponentName(getPackageName(),
+                "de.syss.MifareClassicTool.MainMenuAlias");
 
         // Get preferences (init. the member variables).
         mPrefAutoReconnect = findViewById(
@@ -201,8 +201,12 @@ public class Preferences extends BasicActivity {
      */
     @SuppressLint("SwitchIntDef")
     private void detectAutostartIfCardDetectedState() {
-        int enabledSetting = mPackageManager.getComponentEnabledSetting(
-                mComponentName);
+        // A17 build: the alias is toggled at runtime, so the user's choice
+        // is kept in a preference instead.
+        int enabledSetting = Common.getPreferences().getBoolean(
+                "a17_autostart", true)
+                ? PackageManager.COMPONENT_ENABLED_STATE_ENABLED
+                : PackageManager.COMPONENT_ENABLED_STATE_DISABLED;
         switch (enabledSetting) {
             case PackageManager.COMPONENT_ENABLED_STATE_ENABLED:
             case PackageManager.COMPONENT_ENABLED_STATE_DEFAULT:
@@ -407,16 +411,20 @@ public class Preferences extends BasicActivity {
         edit.apply();
 
         // Update card detection on autostart.
+        Common.getPreferences().edit().putBoolean("a17_autostart",
+                mPrefAutostartIfCardDetected.isChecked()).apply();
         int newState;
         if (mPrefAutostartIfCardDetected.isChecked()) {
             newState = PackageManager.COMPONENT_ENABLED_STATE_ENABLED;
         } else {
             newState = PackageManager.COMPONENT_ENABLED_STATE_DISABLED;
         }
-        mPackageManager.setComponentEnabledSetting(
-                mComponentName,
-                newState,
-                PackageManager.DONT_KILL_APP);
+        if (newState == PackageManager.COMPONENT_ENABLED_STATE_DISABLED) {
+            mPackageManager.setComponentEnabledSetting(
+                    mComponentName,
+                    newState,
+                    PackageManager.DONT_KILL_APP);
+        }
 
         // Update language.
         String lang = (String) mLangauge.getSelectedItem();

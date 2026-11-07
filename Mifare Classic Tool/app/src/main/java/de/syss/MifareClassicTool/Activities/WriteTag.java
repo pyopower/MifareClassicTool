@@ -134,6 +134,8 @@ public class WriteTag extends BasicActivity {
                 R.id.checkBoxWriteTagDumpStaticAC);
         mWriteManufBlock = findViewById(
                 R.id.checkBoxWriteTagDumpWriteManuf);
+        // A17 build: write the manufacturer block by default (exact clone).
+        mWriteManufBlock.setChecked(true);
 
         mWriteModeLayouts = new ArrayList<>();
         mWriteModeLayouts.add(findViewById(
@@ -158,7 +160,7 @@ public class WriteTag extends BasicActivity {
         // Restore mDumpWithPos and the "write to manufacturer block"-state.
         if (savedInstanceState != null) {
             mWriteManufBlock.setChecked(
-                    savedInstanceState.getBoolean("write_manuf_block", false));
+                    savedInstanceState.getBoolean("write_manuf_block", true));
             Serializable s = null;
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
                 s = savedInstanceState.getSerializable("dump_with_pos", HashMap.class);
@@ -230,6 +232,14 @@ public class WriteTag extends BasicActivity {
     public void onActivityResult(int requestCode,
             int resultCode, Intent data) {
         super.onActivityResult(requestCode, resultCode, data);
+        // Android 17 / reader mode: results arrive before onResume(), when
+        // the NFC reader is still off. Handle them once the activity resumed.
+        Common.runWhenResumed(this,
+                () -> handleActivityResult(requestCode, resultCode, data));
+    }
+
+    private void handleActivityResult(int requestCode,
+            int resultCode, Intent data) {
         int ckmError = -1;
 
         switch(requestCode) {

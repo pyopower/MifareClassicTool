@@ -70,8 +70,29 @@ public class ReadTag extends AppCompatActivity {
      * method will be called.
      */
     @Override
-    public void onActivityResult(int requestCode, int resultCode, Intent data) {
+    public void onResume() {
+        super.onResume();
+        Common.enableNfcForegroundDispatch(this);
+    }
+
+    @Override
+    public void onPause() {
+        super.onPause();
+        Common.disableNfcForegroundDispatch(this);
+    }
+
+    @Override
+    public void onActivityResult(int requestCode,
+            int resultCode, Intent data) {
         super.onActivityResult(requestCode, resultCode, data);
+        // Android 17 / reader mode: results arrive before onResume(), when
+        // the NFC reader is still off. Handle them once the activity resumed.
+        Common.runWhenResumed(this,
+                () -> handleActivityResult(requestCode, resultCode, data));
+    }
+
+    private void handleActivityResult(int requestCode,
+            int resultCode, Intent data) {
 
         if (requestCode == KEY_MAP_CREATOR) {
             if (resultCode != Activity.RESULT_OK) {

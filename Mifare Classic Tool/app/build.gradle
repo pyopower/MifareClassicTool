@@ -9,10 +9,17 @@ android {
 
     defaultConfig {
         applicationId "de.syss.MifareClassicTool"
+        applicationIdSuffix ".a17"
+        versionNameSuffix "-a17"
+        resValue "string", "app_name_a17", "MCT A17"
         minSdk 19
         targetSdk 35
         versionCode 70
         versionName '4.3.1'
+    }
+
+    buildFeatures {
+        resValues true
     }
 
     androidResources {
