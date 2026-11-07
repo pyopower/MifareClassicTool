@@ -42,8 +42,9 @@ jobs:
           A17_KEYSTORE: ${{ runner.temp }}/mct-a17.jks
           A17_KEYSTORE_PASSWORD: ${{ secrets.A17_KEYSTORE_PASSWORD }}
           A17_KEY_ALIAS: mcta17
-          A17_VERSION_CODE: ${{ 7000 + github.run_number }}
-        run: ./gradlew --no-daemon assembleRelease
+        run: |
+          export A17_VERSION_CODE=$((7000 + GITHUB_RUN_NUMBER))
+          ./gradlew --no-daemon assembleRelease
 
       - name: Rename APK
         id: apk
