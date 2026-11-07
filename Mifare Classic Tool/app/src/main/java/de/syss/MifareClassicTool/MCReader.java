@@ -64,6 +64,18 @@ public class MCReader {
     private int mLastSector = -1;
     private int mFirstSector = 0;
     private ArrayList<String> mKeysWithOrder;
+    /** A17 build: key being tried in the current sector (for progress). */
+    private volatile int mKeyMapKeyIndex = 0;
+
+    /** A17 build: index of the key being tried in the current sector. */
+    public int getKeyMapKeyIndex() {
+        return mKeyMapKeyIndex;
+    }
+
+    /** A17 build: number of keys used for mapping. */
+    public int getKeyMapKeyCount() {
+        return mKeysWithOrder == null ? 0 : mKeysWithOrder.size();
+    }
     private boolean mHasAllZeroKey = false;
     private boolean cancelCreateKeyMap = false;
 
@@ -489,6 +501,7 @@ public class MCReader {
             // authentication method A and B.
             keysloop:
             for (int i = 0; i < mKeysWithOrder.size(); i++) {
+                mKeyMapKeyIndex = i;
                 String key = mKeysWithOrder.get(i);
                 byte[] bytesKey = Common.hex2Bytes(key);
                 for (int j = 0; j < retryAuthCount+1;) {

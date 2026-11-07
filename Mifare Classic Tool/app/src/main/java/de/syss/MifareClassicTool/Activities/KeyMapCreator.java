@@ -459,7 +459,8 @@ public class KeyMapCreator extends BasicActivity {
                 Common.setKeyMapRange(mFirstSector, mLastSector);
                 // Init. GUI elements.
                 mProgressStatus = -1;
-                mProgressBar.setMax((mLastSector-mFirstSector)+1);
+                // A17 build: fine-grained progress (per key, not per sector).
+                mProgressBar.setMax(((mLastSector-mFirstSector)+1) * 1000);
                 mCreateKeyMap.setEnabled(false);
                 mIsCreatingKeyMap = true;
                 String message = numberOfLoadedKeys + " " + getString(
@@ -487,6 +488,32 @@ public class KeyMapCreator extends BasicActivity {
      * @see #keyMapCreated(MCReader)
      */
     private void createKeyMap(final MCReader reader, final Context context) {
+        // A17 build: show progress inside a sector too (key i of n), so a
+        // big dictionary does not look like a frozen progress bar.
+        final android.widget.TextView label = findViewById(
+                R.id.textViewCreateKeyMapProgess);
+        final CharSequence labelText = label != null ? label.getText() : null;
+        final int sectors = (mLastSector - mFirstSector) + 1;
+        final Runnable ticker = new Runnable() {
+            @Override
+            public void run() {
+                if (!mIsCreatingKeyMap) {
+                    return;
+                }
+                int done = Math.max(0, mProgressStatus - mFirstSector + 1);
+                int keyCount = Math.max(1, reader.getKeyMapKeyCount());
+                int keyIdx = Math.min(reader.getKeyMapKeyIndex(), keyCount);
+                int current = Math.min(done, sectors - 1);
+                mProgressBar.setProgress(done * 1000
+                        + (done < sectors ? keyIdx * 1000 / keyCount : 0));
+                if (label != null && done < sectors) {
+                    label.setText((mFirstSector + current) + "/" + mLastSector
+                            + " · " + (keyIdx + 1) + "/" + keyCount);
+                }
+                mHandler.postDelayed(this, 250);
+            }
+        };
+        mHandler.post(ticker);
         new Thread(() -> {
             // Build key map parts and update the progress bar.
             while (mProgressStatus < mLastSector) {
@@ -496,11 +523,14 @@ public class KeyMapCreator extends BasicActivity {
                     break;
                 }
 
-                mHandler.post(() -> mProgressBar.setProgress(
-                        (mProgressStatus - mFirstSector) + 1));
+                // Progress is updated by the ticker.
             }
 
             mHandler.post(() -> {
+                mHandler.removeCallbacks(ticker);
+                if (label != null) {
+                    label.setText(labelText);
+                }
                 getWindow().clearFlags(
                         WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
                 mProgressBar.setProgress(0);
