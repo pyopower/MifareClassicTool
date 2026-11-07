@@ -14,8 +14,23 @@ android {
         resValue "string", "app_name_a17", "MCT A17"
         minSdk 19
         targetSdk 35
-        versionCode 70
+        // A17 build: CI passes a growing version code per release.
+        versionCode((System.getenv("A17_VERSION_CODE") ?: "70") as int)
         versionName '4.3.1'
+    }
+
+    signingConfigs {
+        a17 {
+            // Release signing from environment (GitHub Actions secrets or
+            // local), see .github/workflows/a17-release.yml.
+            def ks = System.getenv("A17_KEYSTORE")
+            if (ks) {
+                storeFile file(ks)
+                storePassword System.getenv("A17_KEYSTORE_PASSWORD")
+                keyAlias System.getenv("A17_KEY_ALIAS") ?: "mcta17"
+                keyPassword System.getenv("A17_KEYSTORE_PASSWORD")
+            }
+        }
     }
 
     buildFeatures {
@@ -28,6 +43,9 @@ android {
 
     buildTypes {
         release {
+            if (System.getenv("A17_KEYSTORE")) {
+                signingConfig signingConfigs.a17
+            }
             minifyEnabled false
             shrinkResources false
             proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
